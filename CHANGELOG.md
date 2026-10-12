@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-10-12
+
+### Added
+
+- **Report a bug** from Settings → Report a bug: choose an **issue type**
+  (bug / feature / other, which sets the GitHub label and the section names),
+  paste the context into the field at the top, and **Generate draft** turns it
+  into an issue title and description with the app's active model (falling back
+  to the notes when pi is unavailable). The form attaches the build details —
+  Orbit version, app ID, OS and architecture, install kind, pi CLI version, and
+  the signed-in `gh` account — and creates the issue through the `gh` CLI when
+  it is installed and signed in, otherwise opening GitHub's new-issue page with
+  the title, body, and label prefilled. **Screenshots** can be attached too:
+  they upload with `gh issue create --attach` when `gh` is signed in, and
+  otherwise GitHub's web form opens with the images saved to a temp folder to
+  drag in. The form is its own settings section (also reachable from the command
+  palette), and its strings are localized in all ten shipped locales.
+
+### Fixed
+
+- Removing a workspace from the sidebar no longer leaves its heading behind.
+  Workspace paths are canonicalized (symlinks resolved, so macOS `/tmp` and
+  `/private/tmp` are one folder) when the project list is loaded, when a folder
+  is added, and when the active workspace is set — so a session's recorded
+  `cwd` always lands under its project, a legacy store that listed the same
+  folder twice collapses to one entry, and one click removes the folder for
+  good.
+
 ## [0.2.7] - 2026-10-09
 
 ### Added
@@ -928,7 +956,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - In-transcript find (⌘F) and a full-window image lightbox.
 - Native macOS app bundle, Developer-ID signed and notarizable.
 
-[Unreleased]: https://github.com/imrj05/orbit/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/imrj05/orbit/compare/v0.2.8...HEAD
 [0.0.1]: https://github.com/imrj05/orbit/releases/tag/v0.0.1
 [0.0.2]: https://github.com/imrj05/orbit/releases/tag/v0.0.2
 [0.0.3]: https://github.com/imrj05/orbit/releases/tag/v0.0.3
@@ -956,3 +984,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.2.5]: https://github.com/imrj05/orbit/releases/tag/v0.2.5
 [0.2.6]: https://github.com/imrj05/orbit/releases/tag/v0.2.6
 [0.2.7]: https://github.com/imrj05/orbit/releases/tag/v0.2.7
+[0.2.8]: https://github.com/imrj05/orbit/releases/tag/v0.2.8
