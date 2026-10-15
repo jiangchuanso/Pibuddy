@@ -1,6 +1,6 @@
 [package]
 name = "orbit-pi"
-version = "0.2.8"
+version = "0.2.9"
 description = "Native GPUI workbench for the pi coding agent"
 edition.workspace = true
 license.workspace = true
@@ -39,9 +39,6 @@ rust-i18n = "4.2"
 # Native open/folder dialogs (NSOpenPanel on macOS) for folder selection
 rfd = "0.15"
 orbit-rpc = { path = "../orbit-rpc" }
-# Privacy-first, provider-independent product analytics. The app only sees the
-# `Analytics` trait; Countly lives behind the crate's transport seam.
-orbit-analytics = { path = "../orbit-analytics" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 unicode-segmentation = "1"
