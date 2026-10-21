@@ -1,0 +1,55 @@
+name: Rebuild Linux arm64 artifacts
+
+# One-off: build the Linux arm64 .deb + tarball at the v0.2.11 tag (the
+# published release shipped amd64 only) and upload them onto the existing
+# v0.2.11 release. Safe to delete after a successful run.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux-arm64:
+    name: Linux arm64
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 90
+    env:
+      VERSION: "0.2.11"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.2.11
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            clang cmake pkg-config dpkg-dev \
+            libfontconfig-dev libvulkan1 \
+            libwayland-dev libx11-xcb-dev libxi-dev libxtst-dev \
+            libxkbcommon-x11-dev libssl-dev
+
+      - name: Bundle
+        run: ./scripts/bundle-linux.sh
+
+      - name: Upload Linux arm64 artifacts to v0.2.11
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(dist/orbit-pi-*.tar.gz dist/orbit-pi_*.deb)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no arm64 artifacts were produced"
+            exit 1
+          fi
+          printf 'Uploading to v%s:\n' "$VERSION"; printf '  %s\n' "${files[@]}"
+          gh release upload "v$VERSION" "${files[@]}" \
+            --repo "$GITHUB_REPOSITORY" --clobber
