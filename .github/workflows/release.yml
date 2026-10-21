@@ -276,6 +276,58 @@ jobs:
             dist/orbit-pi_*.deb
           if-no-files-found: warn
 
+  # The arm64 twin of the job above: same script, native runner. bundle-linux.sh
+  # maps the host triple to the Debian architecture (aarch64-* -> arm64), so a
+  # native build is what stamps `Architecture: arm64` and lets dpkg-shlibdeps
+  # derive the arm64 Depends. It also emits the aarch64 tarball the
+  # linux-aarch64 appcast feed already globs for.
+  linux-arm64:
+    name: Linux arm64
+    needs: version
+    if: needs.version.outputs.skip != 'true'
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # Same dependency set as the x86_64 job, resolved to their aarch64
+      # flavors by the runner's own apt sources; dpkg-dev is explicit so the
+      # .deb path (dpkg-deb + dpkg-shlibdeps) is guaranteed, not incidental.
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            clang cmake pkg-config dpkg-dev \
+            libfontconfig-dev libvulkan1 \
+            libwayland-dev libx11-xcb-dev libxi-dev libxtst-dev \
+            libxkbcommon-x11-dev libssl-dev
+
+      - name: Bundle
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          ORBIT_UPDATE_PUBLIC_KEY: ${{ secrets.ORBIT_UPDATE_PUBLIC_KEY }}
+          ORBIT_ANALYTICS_APP_KEY: ${{ secrets.ORBIT_ANALYTICS_APP_KEY }}
+        run: ./scripts/bundle-linux.sh
+
+      # Unlike the x86_64 job, a missing package must not pass silently: the
+      # arm64 .deb is the artifact this job exists for. continue-on-error above
+      # keeps such a failure from sinking the release.
+      - name: Upload Linux arm64 artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64
+          path: |
+            dist/orbit-pi-*.tar.gz
+            dist/orbit-pi_*.deb
+          if-no-files-found: error
+
   windows:
     name: Windows x86_64
     needs: version
@@ -322,7 +374,7 @@ jobs:
 
   draft-release:
     name: Draft GitHub release
-    needs: [version, macos, linux, windows]
+    needs: [version, macos, linux, linux-arm64, windows]
     if: >-
       always()
       && needs.version.result == 'success'

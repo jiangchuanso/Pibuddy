@@ -166,8 +166,9 @@ the release. Notes come from `CHANGELOG.md`.
    - **macOS** — builds the arm64 and universal `.app`s, signs them with your
      Developer ID, notarizes and staples each `.app` and DMG, and emits an
      updater `.tar.gz` for each (`scripts/make-dmg.sh`);
-   - **Linux** — builds `orbit-pi` and packages a `.tar.gz` plus a native `.deb`
-     (`scripts/bundle-linux.sh`);
+   - **Linux** — builds `orbit-pi` natively per architecture and packages a
+     `.tar.gz` plus a `.deb` for each (`scripts/bundle-linux.sh`): `amd64` on
+     `ubuntu-22.04`, `arm64` on `ubuntu-22.04-arm`;
    - **Windows** — builds `orbit-pi.exe` and ships it both bare and in a `.zip`
      (`scripts/bundle-windows.ps1`);
    - **drafts** a GitHub Release on tag `v0.0.2` whose notes are the `[0.0.2]`

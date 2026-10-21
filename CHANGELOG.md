@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Linux releases now ship an arm64 package. The release pipeline built the
+  `.deb` only on an x86_64 runner, so every release carried `amd64` alone and
+  arm64 machines had nothing to `apt install`. The pipeline now also runs
+  `scripts/bundle-linux.sh` on a native arm64 runner, which stamps the package
+  `Architecture: arm64` and derives its dependencies from the arm64 libraries
+  themselves — and emits the matching aarch64 tarball the in-app updater's
+  `linux-aarch64` feed expects.
+
 ## [0.2.11] - 2026-10-21
 
 ### Added
