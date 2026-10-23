@@ -63,15 +63,19 @@ impl OrbitApp {
             .as_ref()
             .and_then(sessions::SessionWatcher::take_reload)
         {
-            self.sessions = reloaded;
-            self.prune_workflow_store();
-            self.sync_session_menu(cx);
-            // The usage index is built from the same files; a write means the
-            // analytics are stale (rate-limited inside the page).
-            if self.usage_open {
-                self.usage.update(cx, |page, cx| page.mark_stale(cx));
+            // A reload that changed nothing (e.g. a bookkeeping append the
+            // scan already reflected) must not rebuild the sidebar or repaint.
+            if reloaded != self.sessions {
+                self.sessions = reloaded;
+                self.prune_workflow_store();
+                self.sync_session_menu(cx);
+                // The usage index is built from the same files; a write means
+                // the analytics are stale (rate-limited inside the page).
+                if self.usage_open {
+                    self.usage.update(cx, |page, cx| page.mark_stale(cx));
+                }
+                cx.notify();
             }
-            cx.notify();
         }
         // Usage: drain any finished scan and recompute if the filter or the
         // index moved. Cheap when nothing changed.
@@ -265,6 +269,8 @@ impl OrbitApp {
                     self.queue = PendingQueue::default();
                     refresh_sessions = true;
                     self.refresh_context_stats();
+                    #[cfg(debug_assertions)]
+                    self.log_turn_diagnostics();
                     // The bridge appends its post-turn snapshot at settle;
                     // read it now instead of waiting for the slow poll.
                     self.quota_entries_next_poll = Instant::now();
@@ -406,9 +412,9 @@ impl OrbitApp {
             let resumed = Duration::from_secs_f32(self.backdrop_phase);
             self.backdrop_clock = Some(Instant::now() - resumed);
         }
-        let clock = self
-            .backdrop_clock
-            .expect("the backdrop clock was armed just above");
+        let Some(clock) = self.backdrop_clock else {
+            return false;
+        };
         self.backdrop_phase = clock.elapsed().as_secs_f32();
         true
     }
@@ -418,6 +424,41 @@ impl OrbitApp {
     /// rather than in visible batches, and drops back the moment it settles.
     fn is_active(&self) -> bool {
         self.busy || self.transcript.is_streaming() || self.retrying || self.is_compacting
+    }
+
+    /// Debug-build-only, local per-turn diagnostic (not telemetry: it never
+    /// leaves the process, never touches the network, and is compiled out of
+    /// release builds). Prints the context window, this turn's cache hit,
+    /// uncached prompt, output, duration, and average rate so a "lower tok/s"
+    /// can be attributed to prefill vs. decode without guessing.
+    #[cfg(debug_assertions)]
+    fn log_turn_diagnostics(&self) {
+        let Some(usage) = self.transcript.last_message_usage() else {
+            return;
+        };
+        let window = self
+            .context
+            .as_ref()
+            .map(|c| c.context_window)
+            .unwrap_or(0);
+        let cache_pct = usage
+            .cache_read_percent()
+            .map(|p| format!("{p:.1}%"))
+            .unwrap_or_else(|| "n/a".into());
+        let duration = self.transcript.last_message_duration();
+        let tps = duration
+            .filter(|d| d.as_secs_f64() >= 1.0 && usage.output > 0)
+            .map(|d| usage.output as f64 / d.as_secs_f64());
+        eprintln!(
+            "[orbit:perf] turn settled — window {window} tokens | cache {} ({cache_pct} hit) | prompt {} uncached | output {} | {}ms | {} tok/s avg",
+            usage.cache_read,
+            usage.input,
+            usage.output,
+            duration
+                .map(|d| d.as_millis().to_string())
+                .unwrap_or_else(|| "?".into()),
+            tps.map(|t| format!("{t:.0}")).unwrap_or_else(|| "?".into()),
+        );
     }
 
     /// Drain background (parked) sessions. Their runs continue in their own
@@ -740,6 +781,7 @@ impl OrbitApp {
                         self.reset_quota_entries();
                     }
                 }
+                self.sync_review_context(cx);
                 *refresh_sessions = true;
                 self.send(CommandBody::GetMessages, "get_messages");
                 self.send(CommandBody::GetState, "get_state");
@@ -765,6 +807,8 @@ impl OrbitApp {
                         self.model_provider = provider.to_string();
                     }
                 }
+                // The Git page labels its context with the provider/model.
+                self.sync_review_context(cx);
                 if let Some(level) = data
                     .get("thinkingLevel")
                     .and_then(serde_json::Value::as_str)
@@ -781,6 +825,7 @@ impl OrbitApp {
                         // the bridge cursor must start over.
                         self.reset_quota_entries();
                         self.recover_latest_turn(cx);
+                        self.sync_review_context(cx);
                     }
                 }
                 // Agent control surface: streaming/compaction state, queue
@@ -902,6 +947,8 @@ impl OrbitApp {
                             .collect()
                     })
                     .unwrap_or_default();
+                // A `/` menu already open picks up the fresh command list.
+                self.sync_autocomplete(cx);
             }
             "get_session_stats" => {
                 self.context = ContextUsage::from_stats(data);
@@ -916,6 +963,7 @@ impl OrbitApp {
                     self.default_model_armed = false;
                     self.reset_turns();
                     self.reset_queue();
+                    self.sync_review_context(cx);
                     // Load the session *before* the slower auth/quota probes,
                     // which would otherwise queue ahead of `get_messages` and
                     // push the transcript out by a network round trip.
@@ -938,6 +986,7 @@ impl OrbitApp {
                 self.extension_widgets.clear();
                 self.reset_turns();
                 self.reset_queue();
+                self.sync_review_context(cx);
                 *refresh_sessions = true;
                 // A fresh session is born on the default model; `set_model`
                 // is pushed once `get_state` reports the new id (see
@@ -1069,7 +1118,7 @@ impl OrbitApp {
                 break;
             }
             let index = self.attachments.len();
-            self.attachments.push(Attachment::from_image(image, index));
+            self.push_attachment(Attachment::from_image(image, index), cx);
         }
         if !pasted.is_empty() {
             cx.notify();

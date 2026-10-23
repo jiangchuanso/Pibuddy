@@ -304,7 +304,9 @@ impl ChatMessage {
             error,
             aborted,
         };
-        let step = message.steps.last_mut().expect("one step");
+        // Borrow the step field directly so image pushes below can touch
+        // `message.images` without a whole-struct mutable borrow.
+        let step = message.steps.first_mut()?;
 
         match value.get("content") {
             Some(Value::String(text)) => step.text = text.clone(),
@@ -662,7 +664,17 @@ fn merge_step(slot: &mut ChatMessage, step: ChatMessage) {
 impl ChatMessage {
     /// A parsed message carries exactly one step — take it.
     fn into_step(mut self) -> Step {
-        self.steps.pop().expect("parsed messages carry one step")
+        self.steps.pop().unwrap_or_default()
+    }
+
+    /// The step streamed text and tool calls append to. Parsed rows always
+    /// carry one; a fresh default keeps a malformed stream from panicking.
+    fn current_step_mut(&mut self) -> &mut Step {
+        if self.steps.is_empty() {
+            self.steps.push(Step::default());
+        }
+        let last = self.steps.len() - 1;
+        &mut self.steps[last]
     }
 }
 
@@ -982,6 +994,11 @@ pub struct Transcript {
     /// row from the moment the user hits send instead of from the first
     /// token — otherwise a slow provider looks like a dropped keystroke.
     awaiting_reply: Rc<Cell<bool>>,
+    /// Cached user-turn row indices, rebuilt only when the message count
+    /// changes (messages only append or are rebuilt wholesale). The rail
+    /// renders every frame; this keeps that O(message-count) pass off the
+    /// hot path.
+    user_turns: Rc<RefCell<(usize, Rc<Vec<usize>>)>>,
 }
 
 impl Transcript {
@@ -1021,7 +1038,37 @@ impl Transcript {
             seed_thinking: Rc::new(Cell::new(false)),
             tail_summary: Rc::new(Cell::new(false)),
             awaiting_reply: Rc::new(Cell::new(false)),
+            user_turns: Rc::new(RefCell::new((0, Rc::new(Vec::new())))),
         }
+    }
+
+    /// User-turn row indices for the navigation rail, recomputed only when
+    /// the message list actually changes. Messages only ever append (or are
+    /// rebuilt wholesale via `load_from`/`clear`), so the message count is a
+    /// sufficient cache key once those two paths invalidate it.
+    fn cached_user_turns(&self) -> Rc<Vec<usize>> {
+        let messages = self.messages.borrow();
+        let mut cache = self.user_turns.borrow_mut();
+        if cache.0 == messages.len() {
+            return cache.1.clone();
+        }
+        let turns = Rc::new(
+            messages
+                .iter()
+                .enumerate()
+                .filter(|(_, message)| message.user)
+                .map(|(ix, _)| ix)
+                .collect::<Vec<usize>>(),
+        );
+        *cache = (messages.len(), turns.clone());
+        turns
+    }
+
+    /// Force the user-turn cache to rebuild on the next read (`load_from`
+    /// and `clear` replace the message list wholesale, so a matching length
+    /// is not proof the cached indices are still valid).
+    fn invalidate_user_turns(&self) {
+        self.user_turns.borrow_mut().0 = usize::MAX;
     }
 
     /// The current transcript text selection, if any — the keyboard copy
@@ -1049,18 +1096,20 @@ impl Transcript {
                     // always begins a new turn — never merged into the run
                     // before it (the whole trail used to collapse into one
                     // assistant blob when prompts followed a tool-heavy run).
-                    let continues_run = parsed_message.is_assistant()
-                        && parsed.last().is_some_and(ChatMessage::is_assistant);
-                    if continues_run {
-                        merge_step(parsed.last_mut().expect("checked"), parsed_message);
-                    } else {
-                        parsed.push(parsed_message);
+                    match parsed.last_mut() {
+                        Some(previous)
+                            if parsed_message.is_assistant() && previous.is_assistant() =>
+                        {
+                            merge_step(previous, parsed_message);
+                        }
+                        _ => parsed.push(parsed_message),
                     }
                 }
             }
         }
         let count = parsed.len();
         *self.messages.borrow_mut() = parsed;
+        self.invalidate_user_turns();
         self.scroller.reset(count);
         self.streaming.set(None);
         self.seed_text.set(false);
@@ -1097,6 +1146,7 @@ impl Transcript {
     /// Clear for a fresh session.
     pub fn clear(&mut self) {
         *self.messages.borrow_mut() = Vec::new();
+        self.invalidate_user_turns();
         self.text_selection.borrow_mut().clear();
         self.scroller.reset(0);
         self.streaming.set(None);
@@ -1288,7 +1338,7 @@ impl Transcript {
                 let thinking = self.finish_thinking();
                 let generation = self.note_generation();
                 self.with_streaming(move |m| {
-                    let step = m.steps.last_mut().expect("step");
+                    let step = m.current_step_mut();
                     if let Some(duration) = thinking {
                         if !step.thinking.is_empty() {
                             step.thinking_duration = Some(duration);
@@ -1305,7 +1355,7 @@ impl Transcript {
                 let started = self.begin_thinking();
                 let generation = self.note_generation();
                 self.with_streaming(move |m| {
-                    let step = m.steps.last_mut().expect("step");
+                    let step = m.current_step_mut();
                     step.generation_time = Some(generation);
                     drop_seed(&mut step.thinking, mark, delta, seeded);
                     step.thinking.push_str(delta);
@@ -1334,7 +1384,7 @@ impl Transcript {
                 // Reasoning is done once the step starts emitting tool calls.
                 let thinking = self.finish_thinking();
                 let (changed, created) = self.with_streaming(|m| {
-                    let step = m.steps.last_mut().expect("step");
+                    let step = m.current_step_mut();
                     if let Some(duration) = thinking {
                         if !step.thinking.is_empty() {
                             step.thinking_duration = Some(duration);
@@ -1376,7 +1426,7 @@ impl Transcript {
                     drop(buffer);
                     match parsed {
                         Some(args) => self.with_streaming(move |m| {
-                            let step = m.steps.last_mut().expect("step");
+                            let step = m.current_step_mut();
                             step.generation_time = Some(generation);
                             let Some(tool) = step.tools.last_mut() else {
                                 return;
@@ -1423,7 +1473,7 @@ impl Transcript {
                     // already captured. Without an id, adopt the newest
                     // id-less row for the same tool before falling back to
                     // the newest row at all.
-                    let step = m.steps.last_mut().expect("step");
+                    let step = m.current_step_mut();
                     let position = id
                         .as_deref()
                         .and_then(|id| step.tools.iter().position(|t| t.id.as_deref() == Some(id)))
@@ -1473,7 +1523,7 @@ impl Transcript {
                             // reasoning when it delivers this block.
                             let thinking = self.finish_thinking();
                             self.with_streaming(move |m| {
-                                let step = m.steps.last_mut().expect("step");
+                                let step = m.current_step_mut();
                                 if let Some(duration) = thinking {
                                     if !step.thinking.is_empty() {
                                         step.thinking_duration = Some(duration);
@@ -2170,6 +2220,18 @@ impl Transcript {
         Some((ix, messages[ix].text()))
     }
 
+    /// The settled run's last assistant message usage, for the debug-build
+    /// per-turn diagnostic log.
+    pub fn last_message_usage(&self) -> Option<MessageUsage> {
+        self.messages.borrow().last().and_then(ChatMessage::usage)
+    }
+
+    /// The settled run's last message generation clock — pi's `durationMs`
+    /// (prefill plus decode), or the client-measured fallback.
+    pub fn last_message_duration(&self) -> Option<Duration> {
+        self.messages.borrow().last().and_then(ChatMessage::generation_time)
+    }
+
     /// Summarize the turn that just settled for a background notification:
     /// the newest assistant message's answer (or the agent error that ended
     /// it) and whether the user aborted it. A user message newer than the
@@ -2424,6 +2486,7 @@ impl Transcript {
         transcript_view::render_transcript(
             TranscriptView {
                 messages: self.messages.clone(),
+                user_turns: self.cached_user_turns(),
                 text_selection: self.text_selection.clone(),
                 scroller: self.scroller.clone(),
                 streaming: self.streaming.clone(),
